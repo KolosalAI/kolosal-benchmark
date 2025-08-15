@@ -1,8 +1,9 @@
 # Kolosal Benchmark Requirements
-# This project uses only Python standard library modules
 # Python 3.7+ is required
 
-# No external dependencies required
+# Required dependencies
+tiktoken>=0.5.0
+
 # The following modules are used from the standard library:
 # - argparse (command line argument parsing)
 # - concurrent.futures (thread pool execution)

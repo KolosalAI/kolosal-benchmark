@@ -36,6 +36,12 @@ from typing import Any, Dict, Optional, Tuple, List
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+
 
 def yes_no(s: str) -> bool:
     return str(s).strip().lower() in {"y", "yes", "true", "1", "on"}
@@ -47,6 +53,71 @@ def mask(s: Optional[str], visible: int = 4) -> str:
     if len(s) <= visible:
         return "*" * len(s)
     return ("*" * (len(s) - visible)) + s[-visible:]
+
+
+def get_token_encoder(model_name: str):
+    """Get the appropriate tiktoken encoder for the model"""
+    if not TIKTOKEN_AVAILABLE:
+        return None
+    
+    try:
+        # Try to get the encoding for the specific model
+        return tiktoken.encoding_for_model(model_name)
+    except KeyError:
+        # If model not found, use a reasonable default
+        try:
+            # For most OpenAI-compatible models, cl100k_base is a good default
+            return tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return None
+
+
+def calculate_input_tokens(messages: List[Dict[str, str]], model_name: str) -> int:
+    """Calculate input tokens from messages using tiktoken"""
+    if not TIKTOKEN_AVAILABLE:
+        return 0
+    
+    encoder = get_token_encoder(model_name)
+    if not encoder:
+        return 0
+    
+    try:
+        # Calculate tokens for the messages
+        # This follows the OpenAI token counting methodology
+        total_tokens = 0
+        
+        # Add tokens for each message
+        for message in messages:
+            # Each message has some overhead tokens
+            total_tokens += 4  # Message overhead
+            
+            for key, value in message.items():
+                if isinstance(value, str):
+                    total_tokens += len(encoder.encode(value))
+                    if key == "name":  # Name field has additional overhead
+                        total_tokens += 1
+        
+        # Add conversation overhead
+        total_tokens += 2  # Conversation overhead
+        
+        return total_tokens
+    except Exception:
+        return 0
+
+
+def calculate_output_tokens(response_content: str, model_name: str) -> int:
+    """Calculate output tokens from response content using tiktoken"""
+    if not TIKTOKEN_AVAILABLE or not response_content:
+        return 0
+    
+    encoder = get_token_encoder(model_name)
+    if not encoder:
+        return 0
+    
+    try:
+        return len(encoder.encode(response_content))
+    except Exception:
+        return 0
 
 
 def now() -> float:
@@ -116,6 +187,12 @@ def do_post(
     timeout_s: float = 60.0,
 ) -> SingleResult:
     start = now()
+    
+    # Calculate input tokens from the request body
+    model_name = body.get("model", "gpt-3.5-turbo")  # Default fallback
+    messages = body.get("messages", [])
+    input_tokens = calculate_input_tokens(messages, model_name)
+    
     try:
         data = json.dumps(body).encode("utf-8")
         req = urllib_request.Request(url=url, data=data, headers=headers, method="POST")
@@ -139,7 +216,10 @@ def do_post(
         except Exception:
             parsed = None
 
-        itok, otok = extract_token_usage(parsed) if parsed is not None else (None, None)
+        # Calculate output tokens from the response content
+        response_content = extract_response_content(parsed) if parsed else ""
+        output_tokens = calculate_output_tokens(response_content, model_name)
+
         return SingleResult(
             request_id=idx,
             ok=(status is not None and 200 <= int(status) < 300),
@@ -147,25 +227,25 @@ def do_post(
             error=None,
             latency_s=latency,
             duration_s=duration,
-            input_tokens=itok,
-            output_tokens=otok,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             response_json=parsed if parsed is not None else text,
         )
     except HTTPError as he:
         latency = now() - start
         try:
-            body = he.read()
-            btxt = body.decode("utf-8", errors="replace") if body else str(he)
+            body_content = he.read()
+            btxt = body_content.decode("utf-8", errors="replace") if body_content else str(he)
         except Exception:
             btxt = str(he)
-        return SingleResult(idx, False, he.code, btxt, latency, latency, None, None, None)
+        return SingleResult(idx, False, he.code, btxt, latency, latency, input_tokens, 0, None)
     except URLError as ue:
         latency = now() - start
         msg = str(ue.reason) if hasattr(ue, "reason") else str(ue)
-        return SingleResult(idx, False, None, msg, latency, latency, None, None, None)
+        return SingleResult(idx, False, None, msg, latency, latency, input_tokens, 0, None)
     except Exception as e:
         latency = now() - start
-        return SingleResult(idx, False, None, f"{e}\n{traceback.format_exc()}", latency, latency, None, None, None)
+        return SingleResult(idx, False, None, f"{e}\n{traceback.format_exc()}", latency, latency, input_tokens, 0, None)
 
 
 def print_params_table(params: List[Tuple[str, str]]) -> None:
@@ -457,7 +537,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     durations = [r.duration_s for r in ok_results]
     avg_duration_ms = (sum(durations) / ok_count * 1000) if ok_count else float("nan")
 
-    input_tokens = sum((r.input_tokens or 0) for r in ok_results)
+    # Include input tokens from all requests (both successful and failed)
+    # since we calculate input tokens locally regardless of API response
+    input_tokens = sum((r.input_tokens or 0) for r in results)
+    # Only include output tokens from successful requests
     output_tokens = sum((r.output_tokens or 0) for r in ok_results)
 
     # Per-request tokens/sec (avg over requests with known tokens)

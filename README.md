@@ -6,6 +6,7 @@ A comprehensive concurrent request tester designed for benchmarking OpenAI-compa
 
 - **Concurrent Load Testing**: Send multiple requests simultaneously with configurable concurrency
 - **OpenAI-Compatible**: Works with any OpenAI-compatible chat completion API
+- **Local Token Calculation**: Accurate token counting using tiktoken, independent of API responses
 - **Detailed Metrics**: Comprehensive performance analysis including latency percentiles, tokens/second, and throughput
 - **Flexible Prompts**: Support for different prompt lengths (short, medium, long)
 - **Response Capture**: Optional saving of all responses for detailed analysis
@@ -142,7 +143,19 @@ Test Results:
 | Tokens/sec per request  : 20.56           |
 | Throughput tps/worker   : 205.57          |
 +-------------------------------------------+
+
+Last Response (Request #50):
++-----------------------------------------------------------------------------------+
+| I'm doing well, thank you for asking! How can I assist you today? I'm here to... |
+| help with any questions you might have about programming, writing, analysis, o... |
+| r just about anything else you'd like to discuss.                                |
++-----------------------------------------------------------------------------------+
 ```
+
+The CLI output now includes:
+- **Comprehensive metrics table**: All performance statistics in an easy-to-read format
+- **Last response preview**: Shows the content of the most recent successful response (truncated for readability)
+- **Error details**: Failed requests are displayed in a structured table format
 
 ## Response Capture
 
@@ -220,7 +233,30 @@ python benchmark.py --base-url $URL --api-key $KEY --model $MODEL --length long 
 ## Requirements
 
 - Python 3.7+
-- No external dependencies (uses only Python standard library)
+- tiktoken (for local token calculation)
+
+Install dependencies with:
+```bash
+pip install -r requirements.txt
+```
+
+## Token Calculation
+
+The tool uses **tiktoken** for accurate local token calculation, providing several advantages:
+
+- **API-Independent**: Token counts are calculated locally, not dependent on API responses
+- **Consistent Metrics**: Get token statistics even for failed requests
+- **Model-Aware**: Automatically selects the appropriate tokenizer for the specified model
+- **Accurate Throughput**: Precise input/output token rates for performance analysis
+
+### Supported Models
+
+The tool automatically detects the appropriate tokenizer for:
+- OpenAI models (GPT-3.5, GPT-4, etc.)
+- Most OpenAI-compatible models
+- Falls back to `cl100k_base` encoding for unknown models
+
+Input tokens are calculated from the request messages, while output tokens are extracted from the API response content.
 
 ## License
 
