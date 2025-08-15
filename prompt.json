@@ -1,0 +1,17 @@
+[
+    {
+        "length": "short",
+        "context_size": 0,
+        "prompt": "<short_prompt>"
+    },
+    {
+        "length": "medium",
+        "context_size": 0,
+        "prompt": "<medium_prompt>"
+    },
+    {
+        "length": "long",
+        "context_size": 0,
+        "prompt": "<long_prompt>"
+    }
+]

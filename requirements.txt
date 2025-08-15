@@ -1,0 +1,23 @@
+# Kolosal Benchmark Requirements
+# This project uses only Python standard library modules
+# Python 3.7+ is required
+
+# No external dependencies required
+# The following modules are used from the standard library:
+# - argparse (command line argument parsing)
+# - concurrent.futures (thread pool execution)
+# - json (JSON parsing and serialization)
+# - math (mathematical functions)
+# - os (operating system interface)
+# - sys (system-specific parameters and functions)
+# - time (time-related functions)
+# - traceback (exception tracebacks)
+# - dataclasses (data class decorator)
+# - typing (type hints)
+# - urllib (URL handling modules)
+
+# Optional: For development and testing
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=4.0.0
+# mypy>=0.950
