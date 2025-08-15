@@ -172,11 +172,13 @@ class SingleResult:
     ok: bool
     status_code: Optional[int]
     error: Optional[str]
-    latency_s: float  # time to first byte
+    latency_s: float  # time to first byte/chunk
+    ttft_s: Optional[float]  # time to first token (for streaming)
     duration_s: float  # full response time
     input_tokens: Optional[int]
     output_tokens: Optional[int]
     response_json: Optional[Any]
+    streaming_chunks: Optional[int]  # number of chunks received
 
 
 def do_post(
@@ -193,43 +195,115 @@ def do_post(
     messages = body.get("messages", [])
     input_tokens = calculate_input_tokens(messages, model_name)
     
+    # Add streaming to the request body
+    body_with_streaming = body.copy()
+    body_with_streaming["stream"] = True
+    
     try:
-        data = json.dumps(body).encode("utf-8")
+        data = json.dumps(body_with_streaming).encode("utf-8")
         req = urllib_request.Request(url=url, data=data, headers=headers, method="POST")
         resp = urllib_request.urlopen(req, timeout=timeout_s)
-        latency = now() - start  # TTFB
-
+        
+        status = getattr(resp, "status", None) or getattr(resp, "code", None)
+        if not (status and 200 <= int(status) < 300):
+            # Non-successful status, read error and return
+            try:
+                error_data = resp.read()
+                error_text = error_data.decode("utf-8", errors="replace") if error_data else f"HTTP {status}"
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            latency = now() - start
+            return SingleResult(idx, False, int(status) if status else None, error_text, latency, None, latency, input_tokens, 0, None, 0)
+        
+        # Process streaming response
+        first_chunk_time = None
+        ttft = None
+        chunks_received = 0
+        accumulated_content = ""
+        complete_response_data = []
+        
         try:
-            raw = resp.read()
-            status = getattr(resp, "status", None) or getattr(resp, "code", None)
+            # Read the streaming response line by line
+            for line in resp:
+                chunk_time = now()
+                if first_chunk_time is None:
+                    first_chunk_time = chunk_time
+                    latency = chunk_time - start  # TTFB (time to first chunk)
+                
+                # Decode the line
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if not line_str:
+                    continue
+                    
+                # Skip SSE prefixes
+                if line_str.startswith("data: "):
+                    line_str = line_str[6:]
+                
+                # Skip ping/heartbeat lines
+                if line_str in ["", "[DONE]"]:
+                    continue
+                
+                try:
+                    # Parse JSON chunk
+                    chunk_data = json.loads(line_str)
+                    complete_response_data.append(chunk_data)
+                    chunks_received += 1
+                    
+                    # Extract content from chunk for TTFT measurement
+                    if ttft is None and chunks_received > 0:
+                        # Look for first actual content token
+                        choices = chunk_data.get("choices", [])
+                        if choices and isinstance(choices, list):
+                            delta = choices[0].get("delta", {})
+                            if isinstance(delta, dict) and delta.get("content"):
+                                ttft = chunk_time - start
+                    
+                    # Accumulate content for token calculation
+                    choices = chunk_data.get("choices", [])
+                    if choices and isinstance(choices, list):
+                        delta = choices[0].get("delta", {})
+                        if isinstance(delta, dict) and "content" in delta:
+                            content = delta.get("content", "")
+                            if content:
+                                accumulated_content += content
+                                
+                except json.JSONDecodeError:
+                    # Skip invalid JSON lines
+                    continue
+                    
         finally:
             try:
                 resp.close()
             except Exception:
                 pass
-
+        
         duration = now() - start
-        text = raw.decode("utf-8", errors="replace") if raw is not None else ""
-        parsed: Optional[Any] = None
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            parsed = None
-
-        # Calculate output tokens from the response content
-        response_content = extract_response_content(parsed) if parsed else ""
-        output_tokens = calculate_output_tokens(response_content, model_name)
-
+        
+        # Calculate output tokens from accumulated content
+        output_tokens = calculate_output_tokens(accumulated_content, model_name)
+        
+        # Create a combined response object
+        combined_response = {
+            "choices": [{"message": {"role": "assistant", "content": accumulated_content}}],
+            "streaming_chunks": complete_response_data,
+            "total_chunks": chunks_received
+        }
+        
         return SingleResult(
             request_id=idx,
-            ok=(status is not None and 200 <= int(status) < 300),
-            status_code=int(status) if status is not None else None,
+            ok=True,
+            status_code=int(status) if status else None,
             error=None,
-            latency_s=latency,
+            latency_s=latency if first_chunk_time else (now() - start),
+            ttft_s=ttft,
             duration_s=duration,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            response_json=parsed if parsed is not None else text,
+            response_json=combined_response,
+            streaming_chunks=chunks_received,
         )
     except HTTPError as he:
         latency = now() - start
@@ -238,14 +312,14 @@ def do_post(
             btxt = body_content.decode("utf-8", errors="replace") if body_content else str(he)
         except Exception:
             btxt = str(he)
-        return SingleResult(idx, False, he.code, btxt, latency, latency, input_tokens, 0, None)
+        return SingleResult(idx, False, he.code, btxt, latency, None, latency, input_tokens, 0, None, 0)
     except URLError as ue:
         latency = now() - start
         msg = str(ue.reason) if hasattr(ue, "reason") else str(ue)
-        return SingleResult(idx, False, None, msg, latency, latency, input_tokens, 0, None)
+        return SingleResult(idx, False, None, msg, latency, None, latency, input_tokens, 0, None, 0)
     except Exception as e:
         latency = now() - start
-        return SingleResult(idx, False, None, f"{e}\n{traceback.format_exc()}", latency, latency, input_tokens, 0, None)
+        return SingleResult(idx, False, None, f"{e}\n{traceback.format_exc()}", latency, None, latency, input_tokens, 0, None, 0)
 
 
 def print_params_table(params: List[Tuple[str, str]]) -> None:
@@ -511,9 +585,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "ok": r.ok,
                         "status_code": r.status_code,
                         "latency_ms": round(r.latency_s * 1000, 3),
+                        "ttft_ms": round(r.ttft_s * 1000, 3) if r.ttft_s is not None else None,
                         "duration_ms": round(r.duration_s * 1000, 3),
                         "input_tokens": r.input_tokens,
                         "output_tokens": r.output_tokens,
+                        "streaming_chunks": r.streaming_chunks,
                         "request": request_body,  # Full conversation context
                         "response": r.response_json,
                         "error": r.error,
@@ -534,8 +610,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     p50_latency_ms = percentile(latencies, 50) * 1000 if ok_count else float("nan")
     p95_latency_ms = percentile(latencies, 95) * 1000 if ok_count else float("nan")
 
+    # TTFT (Time to First Token) metrics
+    ttfts = [r.ttft_s for r in ok_results if r.ttft_s is not None]
+    avg_ttft_ms = (sum(ttfts) / len(ttfts) * 1000) if ttfts else float("nan")
+    p50_ttft_ms = percentile(ttfts, 50) * 1000 if ttfts else float("nan")
+    p95_ttft_ms = percentile(ttfts, 95) * 1000 if ttfts else float("nan")
+
     durations = [r.duration_s for r in ok_results]
     avg_duration_ms = (sum(durations) / ok_count * 1000) if ok_count else float("nan")
+
+    # Streaming metrics
+    total_chunks = sum((r.streaming_chunks or 0) for r in ok_results)
+    avg_chunks_per_request = (total_chunks / ok_count) if ok_count else 0
 
     # Include input tokens from all requests (both successful and failed)
     # since we calculate input tokens locally regardless of API response
@@ -568,9 +654,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         ("Avg latency (TTFB)", f"{avg_latency_ms:.1f} ms" if not math.isnan(avg_latency_ms) else "N/A"),
         ("p50 latency (TTFB)", f"{p50_latency_ms:.1f} ms" if not math.isnan(p50_latency_ms) else "N/A"),
         ("p95 latency (TTFB)", f"{p95_latency_ms:.1f} ms" if not math.isnan(p95_latency_ms) else "N/A"),
+        ("Avg TTFT", f"{avg_ttft_ms:.1f} ms" if not math.isnan(avg_ttft_ms) else "N/A"),
+        ("p50 TTFT", f"{p50_ttft_ms:.1f} ms" if not math.isnan(p50_ttft_ms) else "N/A"),
+        ("p95 TTFT", f"{p95_ttft_ms:.1f} ms" if not math.isnan(p95_ttft_ms) else "N/A"),
         ("Avg duration (RTT)", f"{avg_duration_ms:.1f} ms" if not math.isnan(avg_duration_ms) else "N/A"),
         ("Total input tokens", str(input_tokens)),
         ("Total output tokens", str(output_tokens)),
+        ("Total streaming chunks", str(total_chunks)),
+        ("Avg chunks per request", f"{avg_chunks_per_request:.1f}"),
         ("Tokens/sec (input)", f"{input_tps:.2f}" if not math.isnan(input_tps) else "N/A"),
         ("Tokens/sec (output)", f"{output_tps:.2f}" if not math.isnan(output_tps) else "N/A"),
         ("Tokens/sec per request", f"{avg_per_req_tps:.2f}" if not math.isnan(avg_per_req_tps) else "N/A"),
@@ -602,9 +693,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "avg_latency_ms": avg_latency_ms,
         "p50_latency_ms": p50_latency_ms,
         "p95_latency_ms": p95_latency_ms,
+        "avg_ttft_ms": avg_ttft_ms,
+        "p50_ttft_ms": p50_ttft_ms,
+        "p95_ttft_ms": p95_ttft_ms,
         "avg_duration_ms": avg_duration_ms,
         "total_input_tokens": input_tokens,
         "total_output_tokens": output_tokens,
+        "total_streaming_chunks": total_chunks,
+        "avg_chunks_per_request": avg_chunks_per_request,
         "input_tokens_per_second": input_tps,
         "output_tokens_per_second": output_tps,
         "tokens_per_second_per_request": avg_per_req_tps,

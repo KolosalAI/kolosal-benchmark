@@ -6,8 +6,9 @@ A comprehensive concurrent request tester designed for benchmarking OpenAI-compa
 
 - **Concurrent Load Testing**: Send multiple requests simultaneously with configurable concurrency
 - **OpenAI-Compatible**: Works with any OpenAI-compatible chat completion API
+- **Streaming Support**: Automatic streaming mode with Time to First Token (TTFT) measurement
 - **Local Token Calculation**: Accurate token counting using tiktoken, independent of API responses
-- **Detailed Metrics**: Comprehensive performance analysis including latency percentiles, tokens/second, and throughput
+- **Detailed Metrics**: Comprehensive performance analysis including latency percentiles, TTFT, tokens/second, and throughput
 - **Flexible Prompts**: Support for different prompt lengths (short, medium, long)
 - **Response Capture**: Optional saving of all responses for detailed analysis
 - **Summary Export**: Export metrics to JSON for further processing
@@ -96,19 +97,24 @@ python benchmark.py \
 
 ## Output Metrics
 
-The tool provides comprehensive performance metrics:
+The tool provides comprehensive performance metrics with streaming support:
 
 - **Request Statistics**: Success/failure counts and rates
 - **Latency Metrics**: 
-  - Average latency (Time to First Byte)
+  - Average latency (Time to First Byte/Chunk)
   - P50 and P95 latency percentiles
   - Average round-trip time
+- **Streaming Metrics**:
+  - **Time to First Token (TTFT)**: Critical for real-time applications
+  - P50 and P95 TTFT percentiles
+  - Total streaming chunks received
+  - Average chunks per request
 - **Throughput Metrics**:
   - Requests per second
   - Input/output tokens per second
   - Tokens per second per request
   - Throughput per worker
-- **Token Usage**: Total input and output tokens processed
+- **Token Usage**: Total input and output tokens processed (calculated locally)
 
 ### Example Output
 
@@ -135,9 +141,14 @@ Test Results:
 | Avg latency (TTFB)      : 1247.3 ms       |
 | p50 latency (TTFB)      : 1205.1 ms       |
 | p95 latency (TTFB)      : 1456.8 ms       |
+| Avg TTFT                : 1389.2 ms       |
+| p50 TTFT                : 1356.4 ms       |
+| p95 TTFT                : 1624.7 ms       |
 | Avg duration (RTT)      : 2491.2 ms       |
 | Total input tokens      : 2500            |
 | Total output tokens     : 12800           |
+| Total streaming chunks  : 1280            |
+| Avg chunks per request  : 25.6            |
 | Tokens/sec (output)     : 1027.84         |
 | Tokens/sec (input)      : 200.64          |
 | Tokens/sec per request  : 20.56           |
@@ -159,18 +170,18 @@ The CLI output now includes:
 
 ## Response Capture
 
-When `--capture-responses yes` is used, all responses are saved in JSONL format with complete conversation context:
+When `--capture-responses yes` is used, all responses are saved in JSONL format with complete conversation context and streaming metrics:
 
 ```json
-{"request_id": 1, "ok": true, "status_code": 200, "latency_ms": 1247.3, "duration_ms": 2491.2, "input_tokens": 50, "output_tokens": 256, "request": {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello, how are you?"}], "max_tokens": 128, "temperature": 0.7}, "response": {"choices": [{"message": {"role": "assistant", "content": "I'm doing well, thank you for asking!"}}]}, "error": null}
-{"request_id": 2, "ok": true, "status_code": 200, "latency_ms": 1205.1, "duration_ms": 2387.5, "input_tokens": 50, "output_tokens": 244, "request": {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello, how are you?"}], "max_tokens": 128, "temperature": 0.7}, "response": {"choices": [{"message": {"role": "assistant", "content": "I'm doing great! How can I help you today?"}}]}, "error": null}
+{"request_id": 1, "ok": true, "status_code": 200, "latency_ms": 1247.3, "ttft_ms": 1389.2, "duration_ms": 2491.2, "input_tokens": 50, "output_tokens": 256, "streaming_chunks": 28, "request": {"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hello, how are you?"}], "max_tokens": 128, "temperature": 0.7}, "response": {"choices": [{"message": {"role": "assistant", "content": "I'm doing well, thank you for asking!"}}], "streaming_chunks": [...], "total_chunks": 28}, "error": null}
 ```
 
 Each captured response includes:
 - **Full request context**: The complete API request including model, messages, and parameters
 - **Complete response**: The full API response with all metadata
-- **Performance metrics**: Latency and duration measurements
-- **Token usage**: Input and output token counts if available
+- **Performance metrics**: Latency, TTFT, and duration measurements
+- **Streaming details**: Number of chunks and streaming response data
+- **Token usage**: Input and output token counts (calculated locally)
 
 ## Summary Export
 
@@ -187,9 +198,14 @@ Use `--summary-file` to export metrics as JSON for integration with monitoring s
   "avg_latency_ms": 1247.3,
   "p50_latency_ms": 1205.1,
   "p95_latency_ms": 1456.8,
+  "avg_ttft_ms": 1389.2,
+  "p50_ttft_ms": 1356.4,
+  "p95_ttft_ms": 1624.7,
   "avg_duration_ms": 2491.2,
   "total_input_tokens": 2500,
   "total_output_tokens": 12800,
+  "total_streaming_chunks": 1280,
+  "avg_chunks_per_request": 25.6,
   "input_tokens_per_second": 200.64,
   "output_tokens_per_second": 1027.84,
   "tokens_per_second_per_request": 20.56,
